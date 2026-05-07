@@ -29,6 +29,33 @@ const chatMessageSchema = new mongoose.Schema(
 
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
 
+// User model to track connected sockets and last seen
+const userSchema = new mongoose.Schema(
+  {
+    socketId: { type: String, required: true, unique: true, index: true },
+    displayName: { type: String },
+    connected: { type: Boolean, default: true },
+    lastSeen: { type: Date, default: Date.now },
+    rooms: [{ type: String }],
+  },
+  { timestamps: true }
+);
+
+const User = mongoose.model('User', userSchema);
+
+// Room model to hold basic room metadata and counters
+const roomSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, unique: true, index: true },
+    createdBy: { type: String },
+    messageCount: { type: Number, default: 0 },
+    lastMessageAt: { type: Date },
+  },
+  { timestamps: true }
+);
+
+const Room = mongoose.model('Room', roomSchema);
+
 const connectToDatabase = async () => {
   try {
     await mongoose.connect(MONGO_URI);
@@ -57,9 +84,20 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   console.log('A user connected');
   console.log(`User ID: ${socket.id}`);
+
+  // Persist a User record for this socket connection
+  try {
+    await User.findOneAndUpdate(
+      { socketId: socket.id },
+      { $set: { socketId: socket.id, connected: true, lastSeen: new Date() } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('Failed to upsert user record:', err.message);
+  }
 
   const emitRoomUsers = (roomName) => {
     const roomSize = io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
@@ -78,6 +116,18 @@ io.on('connection', (socket) => {
     emitRoomUsers(currentRoom);
   };
 
+  // Helper to record that this socket left a room in the User document
+  const removeRoomFromUser = async (roomName) => {
+    try {
+      await User.findOneAndUpdate(
+        { socketId: socket.id },
+        { $pull: { rooms: roomName }, $set: { lastSeen: new Date() } }
+      );
+    } catch (err) {
+      console.error('Failed to remove room from user:', err.message);
+    }
+  };
+
   socket.on('message', async ({ message, room }) => {
     const trimmedMessage = message?.trim();
     const trimmedRoom = room?.trim();
@@ -92,6 +142,17 @@ io.on('connection', (socket) => {
         text: trimmedMessage,
         senderId: socket.id,
       });
+
+      // Update room metadata: increment messageCount and set lastMessageAt
+      try {
+        await Room.findOneAndUpdate(
+          { name: trimmedRoom },
+          { $inc: { messageCount: 1 }, $set: { lastMessageAt: savedMessage.createdAt } },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.error('Failed to update room metadata:', err.message);
+      }
 
       const messagePayload = {
         id: savedMessage.id,
@@ -124,6 +185,27 @@ io.on('connection', (socket) => {
     socket.data.currentRoom = trimmedRoomName;
     console.log(`Socket ${socket.id} joined room: ${trimmedRoomName}`);
 
+    // Upsert the Room metadata and add this room to the User record
+    try {
+      await Room.findOneAndUpdate(
+        { name: trimmedRoomName },
+        { $setOnInsert: { createdBy: socket.id }, $set: { lastMessageAt: new Date() } },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error('Failed to upsert room record:', err.message);
+    }
+
+    try {
+      await User.findOneAndUpdate(
+        { socketId: socket.id },
+        { $addToSet: { rooms: trimmedRoomName }, $set: { lastSeen: new Date() } },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error('Failed to add room to user record:', err.message);
+    }
+
     try {
       const roomHistory = await ChatMessage.find({ room: trimmedRoomName })
         .sort({ createdAt: -1 })
@@ -149,14 +231,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave_room', () => {
+    const current = socket.data.currentRoom;
     leaveCurrentRoom();
+    if (current) removeRoomFromUser(current);
   });
 
   socket.emit('welcome', `welcome to the server ,${socket.id}`);
 
   socket.on('disconnect', () => {
     leaveCurrentRoom();
-    console.log('User disconnected',socket.id);
+    // mark user disconnected
+    User.findOneAndUpdate(
+      { socketId: socket.id },
+      { $set: { connected: false, lastSeen: new Date() } }
+    ).catch(err => console.error('Failed to mark user disconnected:', err.message));
+
+    console.log('User disconnected', socket.id);
   });
   
 });
