@@ -14,6 +14,43 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Credentials', 'true');
   next();
 });
+
+// Simple auth: if API_KEY is set, require it via `x-api-key` header or `api_key` query param
+const API_KEY = process.env.API_KEY || '';
+
+function authMiddleware(req, res, next) {
+  if (!API_KEY) return next();
+  const provided = req.headers['x-api-key'] || req.query.api_key;
+  if (!provided || provided !== API_KEY) {
+    return res.status(401).json({ error: 'Invalid or missing API key' });
+  }
+  return next();
+}
+
+// Simple in-memory rate limiter (per-ip or per-api-key). Safe for development only.
+const RATE_LIMIT = parseInt(process.env.RATE_LIMIT || '120', 10); // requests per window
+const RATE_WINDOW_MS = parseInt(process.env.RATE_WINDOW_MS || '60000', 10); // window in ms
+const rateStore = new Map();
+
+function rateLimitMiddleware(req, res, next) {
+  const key = API_KEY ? (req.headers['x-api-key'] || req.ip) : req.ip;
+  const now = Date.now();
+  const entry = rateStore.get(key) || { count: 0, start: now };
+  if (now - entry.start > RATE_WINDOW_MS) {
+    entry.count = 0;
+    entry.start = now;
+  }
+  entry.count += 1;
+  rateStore.set(key, entry);
+  if (entry.count > RATE_LIMIT) {
+    res.set('Retry-After', Math.ceil((entry.start + RATE_WINDOW_MS - now) / 1000));
+    return res.status(429).json({ error: 'Too many requests, slow down' });
+  }
+  next();
+}
+
+// Apply auth + rate limit to API routes
+app.use('/api', authMiddleware, rateLimitMiddleware);
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/realtime_chat_app';
 
