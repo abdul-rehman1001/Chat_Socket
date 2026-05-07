@@ -67,6 +67,7 @@ const chatMessageSchema = new mongoose.Schema(
     room: { type: String, required: true, index: true },
     text: { type: String, required: true },
     senderId: { type: String, required: true },
+    senderName: { type: String },
   },
   { timestamps: true }
 );
@@ -148,6 +149,22 @@ app.get('/api/rooms', async (req, res) => {
   }
 });
 
+// POST a message to a room (testing helper). Accepts { text, senderName }
+app.post('/api/rooms/:name/messages', express.json(), async (req, res) => {
+  const roomName = req.params.name;
+  const { text, senderName } = req.body || {};
+  if (!text || !roomName) return res.status(400).json({ error: 'text and room required' });
+
+  try {
+    const saved = await ChatMessage.create({ room: roomName, text, senderId: req.ip || 'api', senderName: senderName || undefined });
+    // update room metadata
+    await Room.findOneAndUpdate({ name: roomName }, { $inc: { messageCount: 1 }, $set: { lastMessageAt: saved.createdAt } }, { upsert: true });
+    res.json({ ok: true, id: saved._id.toString(), senderName: saved.senderName });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get recent messages for a room (optional ?limit= & ?before=ISODate)
 app.get('/api/rooms/:name/messages', async (req, res) => {
   const roomName = req.params.name;
@@ -177,7 +194,7 @@ app.get('/api/rooms/:name/messages', async (req, res) => {
 
     // messagesDesc is newest -> oldest; reverse to oldest -> newest for client
     const messagesAsc = messagesDesc.reverse();
-    const out = messagesAsc.map(m => ({ id: m._id.toString(), room: m.room, text: m.text, senderId: m.senderId, createdAt: m.createdAt }));
+    const out = messagesAsc.map(m => ({ id: m._id.toString(), room: m.room, text: m.text, senderId: m.senderId, senderName: m.senderName, createdAt: m.createdAt }));
 
     let nextCursor = null;
     if (hasMore && messagesDesc.length > 0) {
@@ -260,7 +277,8 @@ io.on('connection', async (socket) => {
     }
   };
 
-  socket.on('message', async ({ message, room }) => {
+  socket.on('message', async ({ message, room, senderName }) => {
+    console.log('Socket message received from', socket.id, { message, room, senderName });
     const trimmedMessage = message?.trim();
     const trimmedRoom = room?.trim();
 
@@ -273,6 +291,7 @@ io.on('connection', async (socket) => {
         room: trimmedRoom,
         text: trimmedMessage,
         senderId: socket.id,
+        senderName: senderName || undefined,
       });
 
       // Update room metadata: increment messageCount and set lastMessageAt
@@ -291,6 +310,7 @@ io.on('connection', async (socket) => {
         room: savedMessage.room,
         text: savedMessage.text,
         senderId: savedMessage.senderId,
+        senderName: savedMessage.senderName,
         createdAt: savedMessage.createdAt,
       };
 
@@ -351,6 +371,7 @@ io.on('connection', async (socket) => {
           room: item.room,
           text: item.text,
           senderId: item.senderId,
+          senderName: item.senderName,
           createdAt: item.createdAt,
         })),
       });

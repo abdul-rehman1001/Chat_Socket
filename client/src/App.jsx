@@ -36,7 +36,7 @@ const createMessage = ({ text, sender, room, isMine }) => ({
 const hydrateServerMessage = (message, currentSocketId) => ({
   id: message.id || crypto.randomUUID(),
   text: message.text,
-  sender: message.senderId === currentSocketId ? 'You' : 'Guest',
+  sender: message.senderId === currentSocketId ? 'You' : (message.senderName || 'Guest'),
   room: message.room,
   time: message.createdAt ? new Date(message.createdAt) : new Date(),
   isMine: message.senderId === currentSocketId,
@@ -58,6 +58,7 @@ const App = () => {
   const currentRoomTargetRef = useRef('');
   const loadedRoomsRef = useRef(new Set());
   const messagesContainerRef = useRef(null);
+  const userNameRef = useRef('');
   const [roomCursors, setRoomCursors] = useState({});
   const loadingOlderRef = useRef(new Set());
 
@@ -69,6 +70,26 @@ const App = () => {
   const [activeRoom, setActiveRoom] = useState('');
   const [connected, setConnected] = useState(false);
   const [roomUsers, setRoomUsers] = useState(0);
+  const [userName, setUserName] = useState(() => {
+    try {
+      return localStorage.getItem('chat:userName') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [userNameEdit, setUserNameEdit] = useState('');
+
+  // Save userName to localStorage when it changes
+  useEffect(() => {
+    userNameRef.current = userName;
+    if (userName) {
+      try {
+        localStorage.setItem('chat:userName', userName);
+      } catch (err) {
+        console.warn('Failed to save userName:', err.message);
+      }
+    }
+  }, [userName]);
 
   useEffect(() => {
     roomRef.current = room;
@@ -104,7 +125,7 @@ const App = () => {
         if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
         const data = await res.json();
         const hydrated = (data.messages || []).map((m) =>
-          hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, createdAt: m.createdAt }, socket.id)
+          hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, senderName: m.senderName, createdAt: m.createdAt }, socket.id)
         );
         setRoomMessages((prev) => ({ ...prev, [trimmedRoom]: hydrated }));
         loadedRoomsRef.current.add(trimmedRoom);
@@ -128,7 +149,7 @@ const App = () => {
       if (!res.ok) throw new Error(`failed to fetch older messages: ${res.status}`);
       const data = await res.json();
       const hydrated = (data.messages || []).map((m) =>
-        hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, createdAt: m.createdAt }, socket.id)
+        hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, senderName: m.senderName, createdAt: m.createdAt }, socket.id)
       );
 
       setRoomMessages((prev) => {
@@ -169,7 +190,9 @@ const App = () => {
       [currentRoom]: [...(prev[currentRoom] || []), outgoingMessage],
     }));
 
-    socket.emit('message', { message: trimmedMessage, room: currentRoom });
+    const payload = { message: trimmedMessage, room: currentRoom, senderName: userNameRef.current || `Guest-${Math.random().toString(36).substring(2, 8)}` };
+    console.log('Emitting message payload:', payload);
+    socket.emit('message', payload);
     setMessage('');
   };
 
@@ -218,6 +241,7 @@ const App = () => {
               text: data?.text ?? data?.message ?? String(data),
               room: data?.room || fallbackRoom,
               senderId: data?.senderId || 'guest',
+              senderName: data?.senderName,
               id: data?.id,
               createdAt: data?.createdAt,
             };
@@ -241,6 +265,7 @@ const App = () => {
             text: item.text,
             room: item.room || historyRoom,
             senderId: item.senderId,
+            senderName: item.senderName,
             createdAt: item.createdAt,
           },
           socket.id
@@ -355,6 +380,53 @@ const App = () => {
                     sx={{ borderColor: 'rgba(255,255,255,0.18)' }}
                   />
                 </Stack>
+
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 3,
+                    backgroundColor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <Typography variant="subtitle2" sx={{ letterSpacing: 0.6, color: 'text.secondary', mb: 1.25 }}>
+                    Your name
+                  </Typography>
+                  <Stack spacing={1}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={userNameEdit}
+                      onChange={(e) => setUserNameEdit(e.target.value)}
+                      label="Display name"
+                      placeholder="e.g., Alex"
+                      InputProps={{
+                        sx: {
+                          borderRadius: 2,
+                          backgroundColor: 'rgba(255,255,255,0.03)',
+                        },
+                      }}
+                    />
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={() => {
+                        if (userNameEdit.trim()) {
+                          setUserName(userNameEdit.trim());
+                          setUserNameEdit('');
+                        }
+                      }}
+                      sx={{ borderRadius: 999, fontWeight: 600 }}
+                    >
+                      Set name
+                    </Button>
+                    {userName && (
+                      <Typography variant="caption" sx={{ color: 'secondary.main', fontWeight: 600 }}>
+                        ✓ {userName}
+                      </Typography>
+                    )}
+                  </Stack>
+                </Box>
 
                 {!connected && (
                   <LinearProgress
