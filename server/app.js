@@ -383,6 +383,26 @@ io.on('connection', async (socket) => {
     emitRoomUsers(trimmedRoomName);
   });
 
+  socket.on('set_display_name', async (displayName) => {
+    const name = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined;
+    try {
+      await User.findOneAndUpdate({ socketId: socket.id }, { $set: { displayName: name, lastSeen: new Date() } }, { upsert: true });
+
+      if (name) {
+        // update past messages so other clients see the new display name
+        try {
+          await ChatMessage.updateMany({ senderId: socket.id }, { $set: { senderName: name } });
+        } catch (err) {
+          console.error('Failed to update past messages with new display name:', err.message);
+        }
+      }
+
+      io.emit('user_name_updated', { socketId: socket.id, displayName: name });
+    } catch (err) {
+      console.error('Failed to set display name for user:', err.message);
+    }
+  });
+
   socket.on('leave_room', () => {
     const current = socket.data.currentRoom;
     leaveCurrentRoom();

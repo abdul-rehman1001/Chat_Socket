@@ -24,11 +24,12 @@ const formatTime = (date) =>
     minute: '2-digit',
   }).format(date);
 
-const createMessage = ({ text, sender, room, isMine }) => ({
+const createMessage = ({ text, sender, room, isMine, senderId }) => ({
   id: crypto.randomUUID(),
   text,
   sender,
   room,
+  senderId,
   time: new Date(),
   isMine,
 });
@@ -36,6 +37,7 @@ const createMessage = ({ text, sender, room, isMine }) => ({
 const hydrateServerMessage = (message, currentSocketId) => ({
   id: message.id || crypto.randomUUID(),
   text: message.text,
+  senderId: message.senderId,
   sender: message.senderId === currentSocketId ? 'You' : (message.senderName || 'Guest'),
   room: message.room,
   time: message.createdAt ? new Date(message.createdAt) : new Date(),
@@ -180,9 +182,10 @@ const App = () => {
 
     const outgoingMessage = createMessage({
       text: trimmedMessage,
-      sender: 'You',
+      sender: userNameRef.current || 'You',
       room: currentRoom,
       isMine: true,
+      senderId: socket.id,
     });
 
     setRoomMessages((prev) => ({
@@ -279,6 +282,17 @@ const App = () => {
       setRoomHistory((prev) => addUniqueRoom(prev, historyRoom));
     };
 
+    const handleUserNameUpdated = ({ socketId, displayName }) => {
+      // Update any messages locally that were sent by this socketId
+      setRoomMessages((prev) => {
+        const out = {};
+        for (const [r, msgs] of Object.entries(prev)) {
+          out[r] = msgs.map((m) => (m.senderId === socketId ? { ...m, sender: displayName } : m));
+        }
+        return out;
+      });
+    };
+
     const handleRoomUsers = ({ roomName: currentRoomName, count }) => {
       if (currentRoomName === currentRoomTargetRef.current || currentRoomName === activeRoomRef.current) {
         setRoomUsers(count);
@@ -289,6 +303,7 @@ const App = () => {
     socket.on('disconnect', handleDisconnect);
     socket.on('receive-message', handleMessage);
     socket.on('room_history', handleRoomHistory);
+    socket.on('user_name_updated', handleUserNameUpdated);
     socket.on('room_users', handleRoomUsers);
     socket.on('welcome', () => setConnected(true));
 
@@ -300,6 +315,7 @@ const App = () => {
       socket.off('disconnect', handleDisconnect);
       socket.off('receive-message', handleMessage);
       socket.off('room_history', handleRoomHistory);
+      socket.off('user_name_updated', handleUserNameUpdated);
       socket.off('room_users', handleRoomUsers);
       socket.off('welcome');
       socket.disconnect();
@@ -412,8 +428,23 @@ const App = () => {
                       size="small"
                       onClick={() => {
                         if (userNameEdit.trim()) {
-                          setUserName(userNameEdit.trim());
+                          const newName = userNameEdit.trim();
+                          setUserName(newName);
                           setUserNameEdit('');
+                          try {
+                            socket.emit('set_display_name', newName);
+                          } catch (err) {
+                            console.warn('Could not emit set_display_name:', err.message);
+                          }
+
+                          // Update existing local messages sent by this socket
+                          setRoomMessages((prev) => {
+                            const out = {};
+                            for (const [r, msgs] of Object.entries(prev)) {
+                              out[r] = msgs.map((m) => (m.senderId === socket.id ? { ...m, sender: newName } : m));
+                            }
+                            return out;
+                          });
                         }
                       }}
                       sx={{ borderRadius: 999, fontWeight: 600 }}
