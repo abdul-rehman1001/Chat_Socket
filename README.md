@@ -67,9 +67,20 @@ npm install
 ### Step 4: Start the Server
 ```bash
 cd ../server
+# PowerShell (Windows)
+Copy-Item .env.example .env
+# macOS/Linux
+# cp .env.example .env
 npm run dev
 ```
 **Server is now running on http://localhost:3000**
+
+Before starting, update `server/.env` with your MongoDB connection string:
+
+```env
+MONGO_URI=mongodb://127.0.0.1:27017/realtime_chat_app
+PORT=3000
+```
 
 ### Step 5: Start the Client (Open New Terminal)
 ```bash
@@ -130,6 +141,7 @@ Chat_Socket/
 |----------------|
 | **Express.js** | 
 | **Socket.IO**  | 
+| **MongoDB + Mongoose**  |
 | **Node.js**    |
 | **CORS**       | 
 

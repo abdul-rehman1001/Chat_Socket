@@ -1,3 +1,6 @@
+# Ignore server environment file
+/server/.env
+
 # Dependencies
 node_modules/
 /.pnp

@@ -33,6 +33,15 @@ const createMessage = ({ text, sender, room, isMine }) => ({
   isMine,
 });
 
+const hydrateServerMessage = (message, currentSocketId) => ({
+  id: message.id || crypto.randomUUID(),
+  text: message.text,
+  sender: message.senderId === currentSocketId ? 'You' : 'Guest',
+  room: message.room,
+  time: message.createdAt ? new Date(message.createdAt) : new Date(),
+  isMine: message.senderId === currentSocketId,
+});
+
 const addUniqueRoom = (rooms, roomName) => {
   if (!roomName) {
     return rooms;
@@ -126,20 +135,46 @@ const App = () => {
     };
 
     const handleMessage = (data) => {
-      const currentRoom = activeRoomRef.current || roomRef.current || 'general';
-      const incomingText = typeof data === 'string' ? data : data?.message ?? String(data);
-      const incomingMessage = createMessage({
-        text: incomingText,
-        sender: 'Guest',
-        room: currentRoom,
-        isMine: false,
-      });
+      const fallbackRoom = activeRoomRef.current || roomRef.current || 'general';
+      const payload =
+        typeof data === 'string'
+          ? { text: data, room: fallbackRoom, senderId: 'guest' }
+          : {
+              text: data?.text ?? data?.message ?? String(data),
+              room: data?.room || fallbackRoom,
+              senderId: data?.senderId || 'guest',
+              id: data?.id,
+              createdAt: data?.createdAt,
+            };
+
+      const incomingMessage = hydrateServerMessage(payload, socket.id);
 
       setRoomMessages((prev) => ({
         ...prev,
-        [currentRoom]: [...(prev[currentRoom] || []), incomingMessage],
+        [incomingMessage.room]: [...(prev[incomingMessage.room] || []), incomingMessage],
       }));
-      setRoomHistory((prev) => addUniqueRoom(prev, currentRoom));
+      setRoomHistory((prev) => addUniqueRoom(prev, incomingMessage.room));
+    };
+
+    const handleRoomHistory = ({ roomName: historyRoom, messages: historyMessages = [] }) => {
+      const hydratedMessages = historyMessages.map((item) =>
+        hydrateServerMessage(
+          {
+            id: item.id,
+            text: item.text,
+            room: item.room || historyRoom,
+            senderId: item.senderId,
+            createdAt: item.createdAt,
+          },
+          socket.id
+        )
+      );
+
+      setRoomMessages((prev) => ({
+        ...prev,
+        [historyRoom]: hydratedMessages,
+      }));
+      setRoomHistory((prev) => addUniqueRoom(prev, historyRoom));
     };
 
     const handleRoomUsers = ({ roomName: currentRoomName, count }) => {
@@ -151,6 +186,7 @@ const App = () => {
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('receive-message', handleMessage);
+    socket.on('room_history', handleRoomHistory);
     socket.on('room_users', handleRoomUsers);
     socket.on('welcome', () => setConnected(true));
 
@@ -158,6 +194,7 @@ const App = () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('receive-message', handleMessage);
+      socket.off('room_history', handleRoomHistory);
       socket.off('room_users', handleRoomUsers);
       socket.off('welcome');
       socket.disconnect();
