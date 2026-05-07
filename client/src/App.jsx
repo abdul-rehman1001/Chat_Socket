@@ -56,6 +56,7 @@ const App = () => {
   const roomRef = useRef('');
   const activeRoomRef = useRef('');
   const currentRoomTargetRef = useRef('');
+  const loadedRoomsRef = useRef(new Set());
 
   const [message, setMessage] = useState('');
   const [room, setRoom] = useState('');
@@ -92,6 +93,23 @@ const App = () => {
     setRoomName('');
     setRoomHistory((prev) => addUniqueRoom(prev, trimmedRoom));
     setRoomUsers(0);
+
+    // Fetch persisted messages for the room via API (falls back to socket room_history)
+    (async () => {
+      try {
+        const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(trimmedRoom)}/messages?limit=200`);
+        if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
+        const data = await res.json();
+        const hydrated = (data.messages || []).map((m) =>
+          hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, createdAt: m.createdAt }, socket.id)
+        );
+        setRoomMessages((prev) => ({ ...prev, [trimmedRoom]: hydrated }));
+        loadedRoomsRef.current.add(trimmedRoom);
+      } catch (err) {
+        // ignore — server will send room_history via socket
+        console.warn('Could not fetch persisted messages for', trimmedRoom, err.message);
+      }
+    })();
   };
 
   const useQuickRoom = (presetRoom) => {
@@ -125,6 +143,23 @@ const App = () => {
   };
 
   useEffect(() => {
+    // Load persisted rooms list from server
+    (async () => {
+      try {
+        const res = await fetch('http://localhost:3000/api/rooms');
+        if (!res.ok) throw new Error(`rooms fetch failed: ${res.status}`);
+        const rooms = await res.json();
+        const names = Array.isArray(rooms) ? rooms.map((r) => r.name) : [];
+        setRoomHistory((prev) => {
+          const merged = new Set(prev || []);
+          names.forEach((n) => merged.add(n));
+          return Array.from(merged);
+        });
+      } catch (err) {
+        console.warn('Could not load rooms list:', err.message);
+      }
+    })();
+
     const handleConnect = () => {
       setConnected(true);
     };
@@ -157,6 +192,8 @@ const App = () => {
     };
 
     const handleRoomHistory = ({ roomName: historyRoom, messages: historyMessages = [] }) => {
+      // If we already fetched messages via REST for this room, don't overwrite
+      if (loadedRoomsRef.current.has(historyRoom)) return;
       const hydratedMessages = historyMessages.map((item) =>
         hydrateServerMessage(
           {
