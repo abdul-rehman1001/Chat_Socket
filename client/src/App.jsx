@@ -216,10 +216,10 @@ const App = () => {
                     Chat
                   </Typography>
                   <Typography variant="h4" sx={{ fontWeight: 800, lineHeight: 1.05, mt: 0.75 }}>
-                    Professional real-time rooms.
+                    Live rooms, built for conversation.
                   </Typography>
                   <Typography variant="body2" sx={{ color: 'text.secondary', mt: 1.2 }}>
-                    Join a room, keep the conversation flowing, and watch messages animate into place.
+                    Join a room, stay in sync, and follow the conversation as it updates in real time.
                   </Typography>
                 </Box>
 
