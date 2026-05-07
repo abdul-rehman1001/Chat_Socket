@@ -57,6 +57,9 @@ const App = () => {
   const activeRoomRef = useRef('');
   const currentRoomTargetRef = useRef('');
   const loadedRoomsRef = useRef(new Set());
+  const messagesContainerRef = useRef(null);
+  const [roomCursors, setRoomCursors] = useState({});
+  const loadingOlderRef = useRef(new Set());
 
   const [message, setMessage] = useState('');
   const [room, setRoom] = useState('');
@@ -97,7 +100,7 @@ const App = () => {
     // Fetch persisted messages for the room via API (falls back to socket room_history)
     (async () => {
       try {
-        const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(trimmedRoom)}/messages?limit=200`);
+        const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(trimmedRoom)}/messages?limit=50`);
         if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
         const data = await res.json();
         const hydrated = (data.messages || []).map((m) =>
@@ -105,11 +108,39 @@ const App = () => {
         );
         setRoomMessages((prev) => ({ ...prev, [trimmedRoom]: hydrated }));
         loadedRoomsRef.current.add(trimmedRoom);
+        setRoomCursors((prev) => ({ ...prev, [trimmedRoom]: data.nextCursor || null }));
       } catch (err) {
         // ignore — server will send room_history via socket
         console.warn('Could not fetch persisted messages for', trimmedRoom, err.message);
       }
     })();
+  };
+
+  const fetchOlderMessages = async (roomName) => {
+    if (!roomName) return;
+    const cursor = roomCursors[roomName];
+    if (!cursor) return; // no more
+    if (loadingOlderRef.current.has(roomName)) return;
+    loadingOlderRef.current.add(roomName);
+
+    try {
+      const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(roomName)}/messages?limit=50&cursor=${encodeURIComponent(cursor)}`);
+      if (!res.ok) throw new Error(`failed to fetch older messages: ${res.status}`);
+      const data = await res.json();
+      const hydrated = (data.messages || []).map((m) =>
+        hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, createdAt: m.createdAt }, socket.id)
+      );
+
+      setRoomMessages((prev) => {
+        const existing = prev[roomName] || [];
+        return { ...prev, [roomName]: [...hydrated, ...existing] };
+      });
+      setRoomCursors((prev) => ({ ...prev, [roomName]: data.nextCursor || null }));
+    } catch (err) {
+      console.warn('Failed to load older messages for', roomName, err.message);
+    } finally {
+      loadingOlderRef.current.delete(roomName);
+    }
   };
 
   const useQuickRoom = (presetRoom) => {
@@ -162,6 +193,15 @@ const App = () => {
 
     const handleConnect = () => {
       setConnected(true);
+    };
+
+    const handleScroll = (e) => {
+      const el = e.target;
+      if (!el) return;
+      if (el.scrollTop <= 8) {
+        const current = activeRoomRef.current;
+        fetchOlderMessages(current);
+      }
     };
 
     const handleDisconnect = () => {
@@ -227,6 +267,9 @@ const App = () => {
     socket.on('room_users', handleRoomUsers);
     socket.on('welcome', () => setConnected(true));
 
+    const node = messagesContainerRef.current;
+    if (node) node.addEventListener('scroll', handleScroll);
+
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
@@ -235,6 +278,7 @@ const App = () => {
       socket.off('room_users', handleRoomUsers);
       socket.off('welcome');
       socket.disconnect();
+      if (node) node.removeEventListener('scroll', handleScroll);
     };
   }, [socket]);
 
@@ -480,6 +524,7 @@ const App = () => {
               </Box>
 
               <Box
+                ref={messagesContainerRef}
                 sx={{
                   flex: 1,
                   overflowY: 'auto',

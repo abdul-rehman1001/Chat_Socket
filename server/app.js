@@ -115,15 +115,44 @@ app.get('/api/rooms', async (req, res) => {
 app.get('/api/rooms/:name/messages', async (req, res) => {
   const roomName = req.params.name;
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 500);
-  const before = req.query.before ? new Date(req.query.before) : null;
+  const cursor = req.query.cursor;
+
+  // cursor is a base64 JSON payload: { before: ISODateString }
+  let before = null;
+  if (cursor) {
+    try {
+      const json = Buffer.from(cursor, 'base64').toString('utf8');
+      const parsed = JSON.parse(json);
+      if (parsed && parsed.before) before = new Date(parsed.before);
+    } catch (err) {
+      // ignore invalid cursor
+    }
+  }
 
   try {
     const q = { room: roomName };
     if (before && !isNaN(before.getTime())) q.createdAt = { $lt: before };
 
-    const messages = await ChatMessage.find(q).sort({ createdAt: -1 }).limit(limit).lean();
-    const out = messages.reverse().map(m => ({ id: m._id.toString(), room: m.room, text: m.text, senderId: m.senderId, createdAt: m.createdAt }));
-    res.json({ room: roomName, messages: out });
+    // fetch one extra to detect whether there's more
+    const messagesDesc = await ChatMessage.find(q).sort({ createdAt: -1 }).limit(limit + 1).lean();
+    const hasMore = messagesDesc.length > limit;
+    if (hasMore) messagesDesc.pop(); // keep only 'limit' items
+
+    // messagesDesc is newest -> oldest; reverse to oldest -> newest for client
+    const messagesAsc = messagesDesc.reverse();
+    const out = messagesAsc.map(m => ({ id: m._id.toString(), room: m.room, text: m.text, senderId: m.senderId, createdAt: m.createdAt }));
+
+    let nextCursor = null;
+    if (hasMore && messagesDesc.length > 0) {
+      // oldest of the returned set (after pop) is messagesDesc[messagesDesc.length - 1]
+      const oldest = messagesDesc[messagesDesc.length - 1];
+      if (oldest && oldest.createdAt) {
+        const payload = { before: oldest.createdAt.toISOString() };
+        nextCursor = Buffer.from(JSON.stringify(payload)).toString('base64');
+      }
+    }
+
+    res.json({ room: roomName, messages: out, nextCursor });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
