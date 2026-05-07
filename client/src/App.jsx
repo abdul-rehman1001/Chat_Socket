@@ -33,6 +33,14 @@ const createMessage = ({ text, sender, room, isMine }) => ({
   isMine,
 });
 
+const addUniqueRoom = (rooms, roomName) => {
+  if (!roomName) {
+    return rooms;
+  }
+
+  return rooms.includes(roomName) ? rooms : [...rooms, roomName];
+};
+
 const App = () => {
   const socket = useMemo(() => io('http://localhost:3000'), []);
   const messagesEndRef = useRef(null);
@@ -42,7 +50,8 @@ const App = () => {
 
   const [message, setMessage] = useState('');
   const [room, setRoom] = useState('');
-  const [messages, setMessages] = useState([]);
+  const [roomMessages, setRoomMessages] = useState({});
+  const [roomHistory, setRoomHistory] = useState([]);
   const [roomName, setRoomName] = useState('');
   const [activeRoom, setActiveRoom] = useState('');
   const [connected, setConnected] = useState(false);
@@ -72,7 +81,7 @@ const App = () => {
     setRoom(trimmedRoom);
     setActiveRoom(trimmedRoom);
     setRoomName('');
-    setMessages([]);
+    setRoomHistory((prev) => addUniqueRoom(prev, trimmedRoom));
     setRoomUsers(0);
   };
 
@@ -90,15 +99,17 @@ const App = () => {
       return;
     }
 
-    setMessages((prev) => [
+    const outgoingMessage = createMessage({
+      text: trimmedMessage,
+      sender: 'You',
+      room: currentRoom,
+      isMine: true,
+    });
+
+    setRoomMessages((prev) => ({
       ...prev,
-      createMessage({
-        text: trimmedMessage,
-        sender: 'You',
-        room: currentRoom,
-        isMine: true,
-      }),
-    ]);
+      [currentRoom]: [...(prev[currentRoom] || []), outgoingMessage],
+    }));
 
     socket.emit('message', { message: trimmedMessage, room: currentRoom });
     setMessage('');
@@ -117,16 +128,18 @@ const App = () => {
     const handleMessage = (data) => {
       const currentRoom = activeRoomRef.current || roomRef.current || 'general';
       const incomingText = typeof data === 'string' ? data : data?.message ?? String(data);
+      const incomingMessage = createMessage({
+        text: incomingText,
+        sender: 'Guest',
+        room: currentRoom,
+        isMine: false,
+      });
 
-      setMessages((prev) => [
+      setRoomMessages((prev) => ({
         ...prev,
-        createMessage({
-          text: incomingText,
-          sender: 'Guest',
-          room: currentRoom,
-          isMine: false,
-        }),
-      ]);
+        [currentRoom]: [...(prev[currentRoom] || []), incomingMessage],
+      }));
+      setRoomHistory((prev) => addUniqueRoom(prev, currentRoom));
     };
 
     const handleRoomUsers = ({ roomName: currentRoomName, count }) => {
@@ -153,7 +166,9 @@ const App = () => {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [roomMessages, activeRoom]);
+
+  const activeMessages = roomMessages[activeRoom] || [];
 
   return (
     <Box
@@ -298,11 +313,46 @@ const App = () => {
                     border: '1px solid rgba(255,255,255,0.06)',
                   }}
                 >
+                  <Typography variant="subtitle2" sx={{ letterSpacing: 0.6, color: 'text.secondary', mb: 1.25 }}>
+                    Room history
+                  </Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    {roomHistory.length === 0 ? (
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        Join or create a room to see it here.
+                      </Typography>
+                    ) : (
+                      roomHistory.map((item) => (
+                        <Chip
+                          key={item}
+                          label={item}
+                          onClick={() => joinRoom(item)}
+                          clickable
+                          color={item === activeRoom ? 'primary' : 'default'}
+                          sx={{
+                            backgroundColor: item === activeRoom ? 'rgba(124,140,255,0.22)' : 'rgba(255,255,255,0.04)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            '&:hover': { backgroundColor: 'rgba(124,140,255,0.18)' },
+                          }}
+                        />
+                      ))
+                    )}
+                  </Stack>
+                </Box>
+
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 3,
+                    backgroundColor: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
                   <Typography variant="subtitle2" sx={{ color: 'secondary.main', mb: 0.5 }}>
                     Chat tips
                   </Typography>
                   <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.7 }}>
-                    The Connected badge appears only when at least two people are in the same room.
+                    The room history keeps your created rooms visible, and each room shows only its own messages.
                   </Typography>
                 </Box>
               </Stack>
@@ -339,7 +389,7 @@ const App = () => {
                     {activeRoom ? activeRoom : 'Select a room'}
                   </Typography>
                   <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                    {messages.length} messages in this conversation
+                    {activeMessages.length} messages in this conversation
                   </Typography>
                 </Box>
                 <Stack direction="row" spacing={1} alignItems="center">
@@ -363,7 +413,7 @@ const App = () => {
                   background: 'radial-gradient(circle at top center, rgba(124, 140, 255, 0.08), transparent 36%)',
                 }}
               >
-                {messages.length === 0 ? (
+                {activeMessages.length === 0 ? (
                   <Box
                     sx={{
                       height: '100%',
@@ -385,7 +435,7 @@ const App = () => {
                   </Box>
                 ) : (
                   <Stack spacing={1.5}>
-                    {messages.map((msg) => (
+                    {activeMessages.map((msg) => (
                       <Box
                         key={msg.id}
                         sx={{
