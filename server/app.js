@@ -7,6 +7,13 @@ import mongoose from 'mongoose';
 dotenv.config();
 
 const app = express();
+// Minimal CORS for client requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  next();
+});
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/realtime_chat_app';
 
@@ -82,6 +89,65 @@ const io = new SocketIOServer(server, {
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
+});
+
+// Health check for quick monitoring
+app.get('/api/healthz', async (req, res) => {
+  try {
+    const state = mongoose.connection.readyState; // 0 disconnected, 1 connected
+    res.json({ ok: true, mongoState: state });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// List rooms with metadata
+app.get('/api/rooms', async (req, res) => {
+  try {
+    const rooms = await Room.find().sort({ lastMessageAt: -1 }).lean();
+    res.json(rooms.map(r => ({ name: r.name, messageCount: r.messageCount || 0, lastMessageAt: r.lastMessageAt })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get recent messages for a room (optional ?limit= & ?before=ISODate)
+app.get('/api/rooms/:name/messages', async (req, res) => {
+  const roomName = req.params.name;
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 500);
+  const before = req.query.before ? new Date(req.query.before) : null;
+
+  try {
+    const q = { room: roomName };
+    if (before && !isNaN(before.getTime())) q.createdAt = { $lt: before };
+
+    const messages = await ChatMessage.find(q).sort({ createdAt: -1 }).limit(limit).lean();
+    const out = messages.reverse().map(m => ({ id: m._id.toString(), room: m.room, text: m.text, senderId: m.senderId, createdAt: m.createdAt }));
+    res.json({ room: roomName, messages: out });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List users
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await User.find().lean();
+    res.json(users.map(u => ({ socketId: u.socketId, connected: u.connected, lastSeen: u.lastSeen, rooms: u.rooms || [] })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a single user
+app.get('/api/users/:socketId', async (req, res) => {
+  try {
+    const u = await User.findOne({ socketId: req.params.socketId }).lean();
+    if (!u) return res.status(404).json({ error: 'not found' });
+    res.json({ socketId: u.socketId, connected: u.connected, lastSeen: u.lastSeen, rooms: u.rooms || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 io.on('connection', async (socket) => {
