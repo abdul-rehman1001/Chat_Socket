@@ -494,7 +494,7 @@ const App = () => {
                       value={userNameEdit}
                       onChange={(e) => setUserNameEdit(e.target.value)}
                       label="Display name"
-                      placeholder="e.g., Alex"
+                      placeholder="e.g., Ali"
                       InputProps={{
                         sx: {
                           borderRadius: 2,
