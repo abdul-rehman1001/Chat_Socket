@@ -7,9 +7,11 @@ import mongoose from 'mongoose';
 dotenv.config();
 
 const app = express();
+// Configurable CORS origin (set CLIENT_ORIGIN in production)
+const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 // Minimal CORS for client requests
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+  res.header('Access-Control-Allow-Origin', CLIENT_ORIGIN);
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   res.header('Access-Control-Allow-Credentials', 'true');
   next();
@@ -119,7 +121,7 @@ const server = createServer(app);
 // Create Socket.IO server
 const io = new SocketIOServer(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: CLIENT_ORIGIN,
     methods: ["GET", "POST"],
     credentials: true
   }
