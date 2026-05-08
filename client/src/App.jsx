@@ -52,8 +52,10 @@ const addUniqueRoom = (rooms, roomName) => {
   return rooms.includes(roomName) ? rooms : [...rooms, roomName];
 };
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 const App = () => {
-  const socket = useMemo(() => io('http://localhost:3000'), []);
+  const socket = useMemo(() => io(API_URL), []);
   const messagesEndRef = useRef(null);
   const roomRef = useRef('');
   const activeRoomRef = useRef('');
@@ -137,7 +139,7 @@ const App = () => {
     loadingOlderRef.current.add(roomName);
 
     try {
-      const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(roomName)}/messages?limit=50&cursor=${encodeURIComponent(cursor)}`);
+      const res = await fetch(`${API_URL}/api/rooms/${encodeURIComponent(roomName)}/messages?limit=50&cursor=${encodeURIComponent(cursor)}`);
       if (!res.ok) throw new Error(`failed to fetch older messages: ${res.status}`);
       const data = await res.json();
       const hydrated = (data.messages || []).map((m) =>
@@ -184,7 +186,6 @@ const App = () => {
     }));
 
     const payload = { message: trimmedMessage, room: currentRoom, senderName: userNameRef.current || `Guest-${Math.random().toString(36).substring(2, 8)}` };
-    console.log('Emitting message payload:', payload);
     socket.emit('message', payload);
     setMessage('');
   };
@@ -193,7 +194,7 @@ const App = () => {
     // Load persisted rooms list from server
     (async () => {
       try {
-        const res = await fetch('http://localhost:3000/api/rooms');
+        const res = await fetch(`${API_URL}/api/rooms`);
         if (!res.ok) throw new Error(`rooms fetch failed: ${res.status}`);
         const rooms = await res.json();
         const names = Array.isArray(rooms) ? rooms.map((r) => r.name) : [];
@@ -267,7 +268,7 @@ const App = () => {
       // Fetch persisted messages for the room via API (falls back to socket room_history)
       (async () => {
         try {
-          const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(joinedRoom)}/messages?limit=50`);
+          const res = await fetch(`${API_URL}/api/rooms/${encodeURIComponent(joinedRoom)}/messages?limit=50`);
           if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
           const data = await res.json();
           const hydrated = (data.messages || []).map((m) =>

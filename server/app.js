@@ -234,8 +234,6 @@ app.get('/api/users/:socketId', async (req, res) => {
 });
 
 io.on('connection', async (socket) => {
-  console.log('A user connected');
-  console.log(`User ID: ${socket.id}`);
 
   // Persist a User record for this socket connection without blocking event handler registration.
   User.findOneAndUpdate(
@@ -296,7 +294,6 @@ io.on('connection', async (socket) => {
   };
 
   socket.on('message', async ({ message, room, senderName }) => {
-    console.log('Socket message received from', socket.id, { message, room, senderName });
     const trimmedMessage = message?.trim();
     const trimmedRoom = room?.trim();
 
@@ -332,7 +329,6 @@ io.on('connection', async (socket) => {
         createdAt: savedMessage.createdAt,
       };
 
-      console.log(`Message from ${trimmedRoom}: ${trimmedMessage}`);
       socket.to(trimmedRoom).emit('receive-message', messagePayload);
     } catch (error) {
       console.error('Failed to store message:', error.message);
@@ -385,7 +381,6 @@ io.on('connection', async (socket) => {
 
     socket.join(trimmedRoomName);
     socket.data.currentRoom = trimmedRoomName;
-    console.log(`Socket ${socket.id} joined room: ${trimmedRoomName}`);
     socket.emit('room_joined', { roomName: trimmedRoomName });
 
     // Upsert the Room metadata and add this room to the User record
@@ -487,12 +482,10 @@ io.on('connection', async (socket) => {
       { socketId: socket.id },
       { $set: { connected: false, lastSeen: new Date() } }
     ).catch(err => console.error('Failed to mark user disconnected:', err.message));
-
-    console.log('User disconnected', socket.id);
   });
   
 });
 
 server.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
