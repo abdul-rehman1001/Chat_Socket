@@ -61,6 +61,8 @@ const App = () => {
   const loadedRoomsRef = useRef(new Set());
   const messagesContainerRef = useRef(null);
   const userNameRef = useRef('');
+  const joinRoomTimeoutRef = useRef(null);
+  const setNameTimeoutRef = useRef(null);
   const [roomCursors, setRoomCursors] = useState({});
   const loadingOlderRef = useRef(new Set());
 
@@ -80,6 +82,10 @@ const App = () => {
     }
   });
   const [userNameEdit, setUserNameEdit] = useState('');
+  const [displayNameError, setDisplayNameError] = useState('');
+  const [roomError, setRoomError] = useState('');
+  const [joiningRoom, setJoiningRoom] = useState(false);
+  const [settingDisplayName, setSettingDisplayName] = useState(false);
 
   // Save userName to localStorage when it changes
   useEffect(() => {
@@ -104,39 +110,23 @@ const App = () => {
   const joinRoom = (selectedRoom) => {
     const trimmedRoom = selectedRoom.trim();
 
-    if (!trimmedRoom) {
+    if (!trimmedRoom || joiningRoom) {
       return;
     }
 
-    if (roomRef.current && roomRef.current !== trimmedRoom) {
-      socket.emit('leave_room');
+    setRoomError('');
+    setJoiningRoom(true);
+
+    if (joinRoomTimeoutRef.current) {
+      clearTimeout(joinRoomTimeoutRef.current);
     }
+    joinRoomTimeoutRef.current = setTimeout(() => {
+      setJoiningRoom(false);
+      setRoomError('Room join timed out. Please try again.');
+    }, 8000);
 
     currentRoomTargetRef.current = trimmedRoom;
     socket.emit('join_room', trimmedRoom);
-    setRoom(trimmedRoom);
-    setActiveRoom(trimmedRoom);
-    setRoomName('');
-    setRoomHistory((prev) => addUniqueRoom(prev, trimmedRoom));
-    setRoomUsers(0);
-
-    // Fetch persisted messages for the room via API (falls back to socket room_history)
-    (async () => {
-      try {
-        const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(trimmedRoom)}/messages?limit=50`);
-        if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
-        const data = await res.json();
-        const hydrated = (data.messages || []).map((m) =>
-          hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, senderName: m.senderName, createdAt: m.createdAt }, socket.id)
-        );
-        setRoomMessages((prev) => ({ ...prev, [trimmedRoom]: hydrated }));
-        loadedRoomsRef.current.add(trimmedRoom);
-        setRoomCursors((prev) => ({ ...prev, [trimmedRoom]: data.nextCursor || null }));
-      } catch (err) {
-        // ignore — server will send room_history via socket
-        console.warn('Could not fetch persisted messages for', trimmedRoom, err.message);
-      }
-    })();
   };
 
   const fetchOlderMessages = async (roomName) => {
@@ -233,6 +223,8 @@ const App = () => {
     const handleDisconnect = () => {
       setConnected(false);
       setRoomUsers(0);
+      setJoiningRoom(false);
+      setSettingDisplayName(false);
     };
 
     const handleMessage = (data) => {
@@ -256,6 +248,47 @@ const App = () => {
         [incomingMessage.room]: [...(prev[incomingMessage.room] || []), incomingMessage],
       }));
       setRoomHistory((prev) => addUniqueRoom(prev, incomingMessage.room));
+    };
+
+    const handleRoomJoined = ({ roomName: joinedRoom }) => {
+      if (!joinedRoom) return;
+      if (joinRoomTimeoutRef.current) {
+        clearTimeout(joinRoomTimeoutRef.current);
+        joinRoomTimeoutRef.current = null;
+      }
+      setJoiningRoom(false);
+      setRoomError('');
+      setRoom(joinedRoom);
+      setActiveRoom(joinedRoom);
+      setRoomName('');
+      setRoomHistory((prev) => addUniqueRoom(prev, joinedRoom));
+      setRoomUsers(0);
+
+      // Fetch persisted messages for the room via API (falls back to socket room_history)
+      (async () => {
+        try {
+          const res = await fetch(`http://localhost:3000/api/rooms/${encodeURIComponent(joinedRoom)}/messages?limit=50`);
+          if (!res.ok) throw new Error(`failed to fetch messages: ${res.status}`);
+          const data = await res.json();
+          const hydrated = (data.messages || []).map((m) =>
+            hydrateServerMessage({ id: m.id, text: m.text, room: m.room, senderId: m.senderId, senderName: m.senderName, createdAt: m.createdAt }, socket.id)
+          );
+          setRoomMessages((prev) => ({ ...prev, [joinedRoom]: hydrated }));
+          loadedRoomsRef.current.add(joinedRoom);
+          setRoomCursors((prev) => ({ ...prev, [joinedRoom]: data.nextCursor || null }));
+        } catch (err) {
+          console.warn('Could not fetch persisted messages for', joinedRoom, err.message);
+        }
+      })();
+    };
+
+    const handleRoomJoinError = ({ message: errMessage }) => {
+      if (joinRoomTimeoutRef.current) {
+        clearTimeout(joinRoomTimeoutRef.current);
+        joinRoomTimeoutRef.current = null;
+      }
+      setJoiningRoom(false);
+      setRoomError(errMessage || 'Could not join this room.');
     };
 
     const handleRoomHistory = ({ roomName: historyRoom, messages: historyMessages = [] }) => {
@@ -291,6 +324,35 @@ const App = () => {
         }
         return out;
       });
+
+      if (socketId === socket.id) {
+        if (setNameTimeoutRef.current) {
+          clearTimeout(setNameTimeoutRef.current);
+          setNameTimeoutRef.current = null;
+        }
+        setSettingDisplayName(false);
+        setUserName(displayName || '');
+        setDisplayNameError('');
+      }
+    };
+
+    const handleDisplayNameSet = ({ displayName }) => {
+      if (setNameTimeoutRef.current) {
+        clearTimeout(setNameTimeoutRef.current);
+        setNameTimeoutRef.current = null;
+      }
+      setSettingDisplayName(false);
+      setUserName(displayName || '');
+      setDisplayNameError('');
+    };
+
+    const handleDisplayNameError = ({ message: errMessage }) => {
+      if (setNameTimeoutRef.current) {
+        clearTimeout(setNameTimeoutRef.current);
+        setNameTimeoutRef.current = null;
+      }
+      setSettingDisplayName(false);
+      setDisplayNameError(errMessage || 'Could not update display name.');
     };
 
     const handleRoomUsers = ({ roomName: currentRoomName, count }) => {
@@ -302,8 +364,12 @@ const App = () => {
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('receive-message', handleMessage);
+    socket.on('room_joined', handleRoomJoined);
+    socket.on('room_join_error', handleRoomJoinError);
     socket.on('room_history', handleRoomHistory);
     socket.on('user_name_updated', handleUserNameUpdated);
+    socket.on('display_name_set', handleDisplayNameSet);
+    socket.on('display_name_error', handleDisplayNameError);
     socket.on('room_users', handleRoomUsers);
     socket.on('welcome', () => setConnected(true));
 
@@ -314,10 +380,22 @@ const App = () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('receive-message', handleMessage);
+      socket.off('room_joined', handleRoomJoined);
+      socket.off('room_join_error', handleRoomJoinError);
       socket.off('room_history', handleRoomHistory);
       socket.off('user_name_updated', handleUserNameUpdated);
+      socket.off('display_name_set', handleDisplayNameSet);
+      socket.off('display_name_error', handleDisplayNameError);
       socket.off('room_users', handleRoomUsers);
       socket.off('welcome');
+      if (joinRoomTimeoutRef.current) {
+        clearTimeout(joinRoomTimeoutRef.current);
+        joinRoomTimeoutRef.current = null;
+      }
+      if (setNameTimeoutRef.current) {
+        clearTimeout(setNameTimeoutRef.current);
+        setNameTimeoutRef.current = null;
+      }
       socket.disconnect();
       if (node) node.removeEventListener('scroll', handleScroll);
     };
@@ -429,28 +507,24 @@ const App = () => {
                       onClick={() => {
                         if (userNameEdit.trim()) {
                           const newName = userNameEdit.trim();
-                          setUserName(newName);
+                          setDisplayNameError('');
                           setUserNameEdit('');
                           try {
                             socket.emit('set_display_name', newName);
                           } catch (err) {
                             console.warn('Could not emit set_display_name:', err.message);
                           }
-
-                          // Update existing local messages sent by this socket
-                          setRoomMessages((prev) => {
-                            const out = {};
-                            for (const [r, msgs] of Object.entries(prev)) {
-                              out[r] = msgs.map((m) => (m.senderId === socket.id ? { ...m, sender: newName } : m));
-                            }
-                            return out;
-                          });
                         }
                       }}
                       sx={{ borderRadius: 999, fontWeight: 600 }}
                     >
                       Set name
                     </Button>
+                    {displayNameError && (
+                      <Typography variant="caption" sx={{ color: 'error.main', fontWeight: 600 }}>
+                        {displayNameError}
+                      </Typography>
+                    )}
                     {userName && (
                       <Typography variant="caption" sx={{ color: 'secondary.main', fontWeight: 600 }}>
                         ✓ {userName}
@@ -499,6 +573,11 @@ const App = () => {
                     >
                       Join room
                     </Button>
+                    {roomError && (
+                      <Typography variant="caption" sx={{ color: 'error.main', fontWeight: 600 }}>
+                        {roomError}
+                      </Typography>
+                    )}
                   </Stack>
                 </Box>
 

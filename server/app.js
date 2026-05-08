@@ -237,20 +237,38 @@ io.on('connection', async (socket) => {
   console.log('A user connected');
   console.log(`User ID: ${socket.id}`);
 
-  // Persist a User record for this socket connection
-  try {
-    await User.findOneAndUpdate(
-      { socketId: socket.id },
-      { $set: { socketId: socket.id, connected: true, lastSeen: new Date() } },
-      { upsert: true }
-    );
-  } catch (err) {
+  // Persist a User record for this socket connection without blocking event handler registration.
+  User.findOneAndUpdate(
+    { socketId: socket.id },
+    { $set: { socketId: socket.id, connected: true, lastSeen: new Date() } },
+    { upsert: true }
+  ).catch((err) => {
     console.error('Failed to upsert user record:', err.message);
-  }
+  });
 
   const emitRoomUsers = (roomName) => {
     const roomSize = io.sockets.adapter.rooms.get(roomName)?.size ?? 0;
     io.to(roomName).emit('room_users', { roomName, count: roomSize });
+  };
+
+  const normalizeDisplayName = (name) => (typeof name === 'string' ? name.trim().toLowerCase() : '');
+
+  const isDisplayNameTakenInRoom = async (roomName, displayName, excludeSocketId) => {
+    const normalizedTarget = normalizeDisplayName(displayName);
+    if (!roomName || !normalizedTarget) return false;
+
+    const roomSocketIds = Array.from(io.sockets.adapter.rooms.get(roomName) || []);
+    if (roomSocketIds.length === 0) return false;
+
+    const roomUsers = await User.find({
+      socketId: { $in: roomSocketIds },
+      connected: true,
+      displayName: { $exists: true, $ne: null },
+    })
+      .select({ socketId: 1, displayName: 1 })
+      .lean();
+
+    return roomUsers.some((u) => u.socketId !== excludeSocketId && normalizeDisplayName(u.displayName) === normalizedTarget);
   };
 
   const leaveCurrentRoom = () => {
@@ -326,7 +344,39 @@ io.on('connection', async (socket) => {
     const trimmedRoomName = roomName?.trim();
 
     if (!trimmedRoomName) {
+      socket.emit('room_join_error', { roomName: trimmedRoomName, message: 'Room name is required.' });
       return;
+    }
+
+    // If user already has a display name, enforce uniqueness within the destination room.
+    let currentDisplayName = socket.data.displayName;
+    if (!currentDisplayName) {
+      try {
+        const existingUser = await User.findOne({ socketId: socket.id }).select({ displayName: 1 }).lean();
+        currentDisplayName = existingUser?.displayName;
+      } catch (err) {
+        console.error('Failed to load user displayName before join:', err.message);
+      }
+    }
+
+    if (currentDisplayName) {
+      try {
+        const taken = await isDisplayNameTakenInRoom(trimmedRoomName, currentDisplayName, socket.id);
+        if (taken) {
+          socket.emit('room_join_error', {
+            roomName: trimmedRoomName,
+            message: 'This name is already taken in that room. Choose another display name.',
+          });
+          return;
+        }
+      } catch (err) {
+        console.error('Failed room name uniqueness check:', err.message);
+        socket.emit('room_join_error', {
+          roomName: trimmedRoomName,
+          message: 'Could not join room right now. Please try again.',
+        });
+        return;
+      }
     }
 
     if (socket.data.currentRoom && socket.data.currentRoom !== trimmedRoomName) {
@@ -336,6 +386,7 @@ io.on('connection', async (socket) => {
     socket.join(trimmedRoomName);
     socket.data.currentRoom = trimmedRoomName;
     console.log(`Socket ${socket.id} joined room: ${trimmedRoomName}`);
+    socket.emit('room_joined', { roomName: trimmedRoomName });
 
     // Upsert the Room metadata and add this room to the User record
     try {
@@ -386,20 +437,38 @@ io.on('connection', async (socket) => {
   socket.on('set_display_name', async (displayName) => {
     const name = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined;
     try {
-      await User.findOneAndUpdate({ socketId: socket.id }, { $set: { displayName: name, lastSeen: new Date() } }, { upsert: true });
+      if (!name) {
+        socket.emit('display_name_error', { message: 'Display name cannot be empty.' });
+        return;
+      }
 
-      if (name) {
-        // update past messages so other clients see the new display name
-        try {
-          await ChatMessage.updateMany({ senderId: socket.id }, { $set: { senderName: name } });
-        } catch (err) {
-          console.error('Failed to update past messages with new display name:', err.message);
+      const currentRoom = socket.data.currentRoom;
+      if (currentRoom) {
+        const taken = await isDisplayNameTakenInRoom(currentRoom, name, socket.id);
+        if (taken) {
+          socket.emit('display_name_error', {
+            message: 'This name is already taken in this room. Please choose another one.',
+            roomName: currentRoom,
+          });
+          return;
         }
       }
 
+      socket.data.displayName = name;
+      await User.findOneAndUpdate({ socketId: socket.id }, { $set: { displayName: name, lastSeen: new Date() } }, { upsert: true });
+
+      // update past messages so other clients see the new display name
+      try {
+        await ChatMessage.updateMany({ senderId: socket.id }, { $set: { senderName: name } });
+      } catch (err) {
+        console.error('Failed to update past messages with new display name:', err.message);
+      }
+
       io.emit('user_name_updated', { socketId: socket.id, displayName: name });
+      socket.emit('display_name_set', { displayName: name });
     } catch (err) {
       console.error('Failed to set display name for user:', err.message);
+      socket.emit('display_name_error', { message: 'Failed to set display name. Please try again.' });
     }
   });
 
