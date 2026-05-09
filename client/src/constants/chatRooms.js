@@ -1,0 +1,1 @@
+export const quickRooms = ['design', 'team', 'general'];
